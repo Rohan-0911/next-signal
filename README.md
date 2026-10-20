@@ -49,11 +49,4 @@ python run.py "<company name>"
 pytest -q
 ```
 
-## Roadmap to the finals (25 Oct)
-- 21 Oct: reliable ingestion for BSE/NSE filings, investor presentations, transcripts; quarterly panel schema
-- 22 Oct: hypothesis ranking with peer adjustment; adversary step tuned
-- 23 Oct: report/dashboard polish with claim→source click-through; run on 5+ companies
-- 24 Oct: robustness (non-NIFTY peers, missing data, caching/fallback), live rehearsal
-- 25 Oct: finals
-
 *Research output only. No investment recommendations.*
