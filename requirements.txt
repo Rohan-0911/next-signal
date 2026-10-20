@@ -1,0 +1,7 @@
+google-genai
+requests
+beautifulsoup4
+pypdf
+ddgs
+fonttools
+pytest
