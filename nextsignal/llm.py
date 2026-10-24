@@ -1,58 +1,78 @@
-"""Thin, swappable LLM wrapper. Default: Google Gemini API (free tier).
+"""Thin, swappable LLM wrapper. Default: Google Gemini API.
 
-Set GOOGLE_API_KEY (from https://aistudio.google.com/apikey) to use.
-Override the model via NS_MODEL env var (default: gemini-3.8-flash).
+Env (put these in .env):  GOOGLE_API_KEY, optional NS_MODEL, NS_MIN_INTERVAL (seconds between calls, default 4)
 """
 from __future__ import annotations
 import json
 import os
 import re
-
+import threading
+import time
 
 FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
+# Visible health counters: a run with failed calls must never look like a clean run.
+STATS = {"calls": 0, "failed": 0, "retries_429": 0}
+_lock = threading.Lock()
+_last_call = [0.0]
+
+
+def _pace():
+    """Space out requests so free-tier per-minute limits are not hit in a burst."""
+    gap = float(os.environ.get("NS_MIN_INTERVAL", "4"))
+    with _lock:
+        wait = _last_call[0] + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.time()
+
+
+def _retry_delay(err: str, default: float) -> float:
+    """Gemini 429s say 'Please retry in 23.4s' or retryDelay: '23s'."""
+    m = re.search(r"retry in ([\d.]+)\s*s", err, re.I) or re.search(r"retryDelay['\": ]+([\d.]+)s", err)
+    return min(float(m.group(1)) + 1.5, 75.0) if m else default
+
+
+def _is_quota(err: str) -> bool:
+    return "429" in err or "RESOURCE_EXHAUSTED" in err or "Quota" in err
+
 
 def complete(system: str, user: str, max_tokens: int = 4000, model: str | None = None) -> str:
-    """Call the Gemini API and return the response text with backoff and model fallback."""
-    import time
-    # pyrefly: ignore[missing-import]
     from google import genai
-    # pyrefly: ignore[missing-import]
     from google.genai import types
 
     client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-    primary_model = model or os.environ.get("NS_MODEL", "gemini-3.5-flash-lite")
-    candidates = [primary_model] + [m for m in FALLBACK_MODELS if m != primary_model]
+    primary = model or os.environ.get("NS_MODEL", "gemini-3.5-flash-lite")
+    candidates = [primary] + [m for m in FALLBACK_MODELS if m != primary]
+    STATS["calls"] += 1
 
     last_err = None
-    for target_model in candidates:
-        for attempt in range(4):
+    for target in candidates:
+        for attempt in range(5):
+            _pace()
             try:
                 response = client.models.generate_content(
-                    model=target_model,
-                    contents=user,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system,
-                        max_output_tokens=max_tokens,
-                        temperature=0.2,          # low temperature for factual research tasks
-                    ),
+                    model=target, contents=user,
+                    config=types.GenerateContentConfig(system_instruction=system, max_output_tokens=max_tokens, temperature=0.2),
                 )
                 return response.text or ""
             except Exception as e:
-                err_str = str(e)
+                err = str(e)
                 last_err = e
-                # Quota exhausted: never retry, immediately move to next model
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
-                    break
-                # Transient: server spike or a flaky connection (DNS, reset, timeout) -> back off and retry
-                if any(x in err_str for x in ("503", "UNAVAILABLE", "getaddrinfo", "ConnectError", "timed out",
-                                              "Timeout", "Connection", "reset", "DNS")):
-                    wait = 2 * (attempt + 1)
-                    print(f"[{target_model}] transient error ({err_str[:50]}...), retry {attempt + 1}/3 in {wait}s")
+                if _is_quota(err):
+                    if "PerDay" in err or "per day" in err.lower():
+                        break                                   # daily quota gone: waiting will not help, try next model
+                    wait = _retry_delay(err, 15.0 * (attempt + 1))
+                    STATS["retries_429"] += 1
+                    print(f"[{target}] rate limited, waiting {wait:.0f}s (attempt {attempt + 1}/5)")
                     time.sleep(wait)
-                else:
-                    break
-
+                    continue
+                if any(x in err for x in ("503", "UNAVAILABLE", "getaddrinfo", "ConnectError", "timed out",
+                                          "Timeout", "Connection", "reset", "DNS")):
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                break
+    STATS["failed"] += 1
     raise last_err or RuntimeError("LLM request failed across all candidate models")
 
 

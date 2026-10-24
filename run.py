@@ -10,6 +10,8 @@ import pathlib
 import socket
 import sys
 import time
+from dotenv import load_dotenv
+load_dotenv()
 
 OUT = pathlib.Path("out")
 
@@ -60,6 +62,12 @@ def main():
     if not refused or not latest.exists():
         latest.write_text(html, encoding="utf-8")
     print(f"Wrote out/{slug}_{stamp}.html | strength: {finding.strength}" + (" | REFUSED (kept previous report)" if refused and latest.exists() else ""))
+        
+    from nextsignal import llm
+    s = llm.STATS
+    print(f"LLM calls: {s['calls']} | failed: {s['failed']} | rate-limit waits: {s['retries_429']}")
+    if s["failed"]:
+        print(f"WARNING: {s['failed']} LLM calls failed (quota). This report may be weaker than normal. Wait a minute and rerun.")
 
 
 if __name__ == "__main__":

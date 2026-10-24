@@ -34,6 +34,10 @@ def parse_period(label) -> tuple[int, int] | None:
         fy = year if mon == "mar" else year + 1 if mon in ("jun", "sep", "dec") else year
         # Jun/Sep/Dec of calendar year Y belong to FY(Y+1); Mar of year Y belongs to FY(Y)
         return fy, _MONTH_Q[mon]
+    m = re.fullmatch(r"(\d{1,2})\s*[-/]\s*(\d{4})", s)          # "06-2026", "3/2026"
+    if m and int(m.group(1)) in (3, 6, 9, 12):
+        mon, year = _MONTHS[int(m.group(1)) - 1], int(m.group(2))
+        return parse_period(f"{mon} {year}")
     return None
 
 

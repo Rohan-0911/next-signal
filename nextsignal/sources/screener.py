@@ -53,18 +53,35 @@ def _get(url: str, ttl_hours: float = 48) -> str:
     return r.text
 
 
+def _query_variants(company: str) -> list[str]:
+    words = company.strip().split()
+    singular = [w[:-1] if len(w) > 4 and w.lower().endswith("s") and not w.lower().endswith("ss") else w for w in words]
+    out = [company.strip(), " ".join(singular)]
+    for n in range(len(singular) - 1, 1, -1):           # drop trailing words but keep at least two
+        out.append(" ".join(singular[:n]))
+    seen = []
+    for q in out:
+        if q and q not in seen:
+            seen.append(q)
+    return seen
+
+
 def resolve_url(company: str) -> str | None:
-    """company name -> consolidated page URL via Screener's public search endpoint."""
+    """company name -> consolidated page URL. Tolerates plurals/typos by retrying shorter variants."""
     if re.fullmatch(r"[A-Z0-9&-]{2,20}", company.strip()):       # already a symbol
         return f"{BASE}/company/{company.strip()}/consolidated/"
-    try:
-        r = requests.get(f"{BASE}/api/company/search/", params={"q": company}, headers=HEADERS, timeout=15)
-        for item in r.json():
-            u = item.get("url", "")
-            if u.startswith("/company/"):
-                return BASE + (u if u.endswith("/") else u + "/")
-    except Exception:
-        pass
+    for q in _query_variants(company):
+        try:
+            r = requests.get(f"{BASE}/api/company/search/", params={"q": q}, headers=HEADERS, timeout=15)
+            for item in r.json():
+                u = item.get("url", "")
+                if u.startswith("/company/"):
+                    if q != company.strip():
+                        print(f"       [screener] '{company}' not found; matched via '{q}' -> {u}")
+                    return BASE + (u if u.endswith("/") else u + "/")
+        except Exception:
+            continue
+    print(f"       [screener] could not resolve '{company}'. Retry with the exact name or the Screener symbol, e.g. TATACONSUM")
     return None
 
 

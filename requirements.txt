@@ -7,3 +7,4 @@ fonttools
 pytest
 yfinance
 pandas
+python-dotenv

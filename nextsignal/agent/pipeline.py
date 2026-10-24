@@ -12,6 +12,7 @@ Stages (see README for the diagram):
 """
 from __future__ import annotations
 import json
+import re
 from .. import llm
 from ..models import Passage, EvidenceItem, Finding
 from ..sources.search import discover_sources, search
@@ -81,13 +82,16 @@ SYS_JUDGE = (
     'JSON: {"stance":"supports|explains|contradicts|neutral","summary":str,"quote":str}'
 )
 
-
 def mentions_company(company: str, text: str) -> bool:
-    """Cheap relevance guard: the document must actually mention the company."""
+    """Relevance guard. Short names (ITC, HUL) collide with unrelated firms, so they must appear
+    as a whole word followed by a legal suffix (Limited/Ltd) or an exchange tag."""
     t = text.lower()
-    name = company.lower()
+    name = re.sub(r"\s+", " ", company.lower()).strip()
+    if len(name) <= 5 and " " not in name:
+        n = re.escape(name)
+        return bool(re.search(rf"\b{n}\s+(limited|ltd)\b|\b(nse|bse)\s*[:\-]\s*{n}\b", t))
     first = name.split()[0]
-    return name in t or (len(first) >= 3 and first in t)
+    return name in t or (len(first) >= 5 and re.search(rf"\b{re.escape(first)}\b", t) is not None)
 
 
 def extract_panel(doc_url: str, doc_type: str, title: str, date: str, focus: str = "") -> list[dict]:

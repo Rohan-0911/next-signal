@@ -15,11 +15,39 @@ DOC_PRIORITY = {"results": 0, "presentation": 1, "annual_report": 2, "transcript
 LEVEL_METRICS = {"revenue", "operating_profit", "cogs", "trade_receivables", "inventory", "trade_payables"}
 MIN_QUARTERS = 4
 
+def _drop_scale_errors(points: list[dict], notes: list[str]) -> list[dict]:
+    """Level metrics from one document may be in another unit (Rs million vs crore, or a segment
+    table). Anchor on the median of all points per metric (quarterly and annual separately)
+    and drop anything more than 3x away."""
+    groups: dict[tuple, list[float]] = {}
+    for p in points:
+        key = parse_period(p.get("period", ""))
+        try:
+            v = float(p["value"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if key is not None and p.get("metric") in LEVEL_METRICS and v > 0:
+            groups.setdefault((p["metric"], key[1] > 0), []).append(v)
+    meds = {g: median(v) for g, v in groups.items() if len(v) >= 4}
+    kept = []
+    for p in points:
+        key = parse_period(p.get("period", ""))
+        med = meds.get((p.get("metric"), key[1] > 0)) if key is not None else None
+        try:
+            v = float(p["value"])
+        except (TypeError, ValueError, KeyError):
+            v = None
+        if med and v and p.get("metric") in LEVEL_METRICS and not (med / 3 <= v <= med * 3):
+            notes.append(f"dropped outlier (unit or scale mismatch) {p.get('metric')} {p.get('period')}={v:g} (typical {med:g})")
+            continue
+        kept.append(p)
+    return kept
 
 def build_panel(points: list[dict]) -> dict:
     """points: [{metric, period, value, passage(with doc_type)}] -> {metric: {key: value}} + notes."""
     notes: list[str] = []
     best: dict[str, dict[tuple, tuple[int, float]]] = {}
+    points = _drop_scale_errors(points, notes)
     for p in points:
         key = parse_period(p.get("period", ""))
         if key is None:
