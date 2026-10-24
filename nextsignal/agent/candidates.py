@@ -6,6 +6,7 @@ tools.metrics.surprise_score = magnitude x persistence x company-specificity x (
 The LLM then explains and stress-tests the top non-one-off candidate.
 """
 from __future__ import annotations
+import re
 from statistics import median
 from ..tools import metrics
 from ..models import Passage, EvidenceItem
@@ -111,7 +112,7 @@ def rank_candidates(panel: dict, derived: dict, peer_check: dict | None = None) 
                 rest = [x for kk, x in q.items() if kk != k]
                 med = median(rest)
                 if med > 0 and v > 3 * med:
-                    out.append({"id": f"oneoff_{m}_{label(k)}", "test": "margin_quality",
+                    out.append({"id": f"oneoff_{m}_{label(k)}", "test": "margin_quality", "period": label(k), "value": v, "metric": m,
                                 "claim": f"{m} spiked to {v:g} in {label(k)} versus a median of {med:g} in other quarters",
                                 "components": {"magnitude": 1.0, "persistence": round(1 / len(vals), 2),
                                                "peer_z": None, "narrative_coverage": 0.9},
@@ -180,4 +181,67 @@ def numeric_evidence(cand: dict, panel: dict, peer_panels: dict, url: str) -> li
                           f"Net profit: {fmt(annual(panel, 'net_profit'), 3)}; Operating profit: {fmt(annual(panel, 'operating_profit'), 3)}; "
                           f"Other income: {fmt(annual(panel, 'other_income'), 3)}", verified=True)
         ev.append(EvidenceItem("h1", "supports", cand["claim"], [passage], "company_primary"))
+        # peers: how many show most of their latest profit growth coming from other income?
+        rows, hits, pass_ = [], 0, []
+        for sym, pp in peer_panels.items():
+            np_, op_, oi_ = annual(pp, "net_profit"), annual(pp, "operating_profit"), annual(pp, "other_income")
+            common = sorted(set(np_) & set(op_) & set(oi_))
+            if len(common) < 2:
+                continue
+            k0, k1 = common[-2], common[-1]
+            dnp, doi = np_[k1] - np_[k0], oi_[k1] - oi_[k0]
+            share = (doi / dnp) if dnp > 0 else 0.0
+            rows.append(f"{sym}: NP {((np_[k1] / np_[k0] - 1) * 100) if np_[k0] else 0:+.0f}%, other income share {share * 100:.0f}%")
+            hits += 1 if (dnp > 0 and share >= 0.5) else 0
+            pass_.append(Passage(f"https://www.screener.in/company/{sym}/consolidated/#profit-loss", "peer", f"Screener annual P&L: {sym}", "",
+                                 f"{sym} net profit {fmt(np_, 3)}; other income {fmt(oi_, 3)}", verified=True))
+        if rows:
+            ev.append(EvidenceItem("h1", "contradicts" if hits >= (len(rows) + 1) // 2 else "supports",
+                      f"Peer check: {hits} of {len(rows)} peers drew at least half of their latest profit growth from other income ({'; '.join(rows)})"
+                      + (" - sector-wide" if hits >= (len(rows) + 1) // 2 else " - specific to this company"), pass_, "peer"))
     return ev
+
+
+def explanation_queries(company: str, ranked: list[dict], selected: dict | None) -> list[tuple[str, str]]:
+    """For a gap that needs an explanation, search for the cause around the quarter where it appeared.
+    Deterministic (built from the computed spike), so it does not depend on the model guessing the right words."""
+    if not selected or "needs_explanation" not in selected.get("flags", []):
+        return []
+    spikes = [c for c in ranked if "one_off" in c["flags"] and c.get("metric") in ("other_income", "net_profit")]
+    if not spikes:
+        return []
+    top = max(spikes, key=lambda c: c.get("value", 0))
+    m = re.search(r"FY(\d{2})-Q([1-4])", top["period"])
+    if not m:
+        return []
+    qlabel, metric = f"Q{m.group(2)} FY{m.group(1)}", top["metric"].replace("_", " ")
+    impl = f"What caused the spike in {metric} in {qlabel}? (exceptional item, demerger, disposal, one-time gain)"
+    return [(f"{company} {qlabel} results net profit exceptional item one-off gain", impl),
+            (f"{company} {qlabel} exceptional gain demerger disposal sale {metric}", impl)]
+
+
+def falsification_for(cand: dict | None, panel: dict) -> str:
+    """Deterministic falsification condition built only from computed numbers (so it can never contain an invented figure)."""
+    if not cand:
+        return ""
+    cid = cand["id"]
+    if cid.startswith("profit_bridge"):
+        oi, np_, op_ = annual(panel, "other_income"), annual(panel, "net_profit"), annual(panel, "operating_profit")
+        common = sorted(set(oi) & set(np_) & set(op_))
+        if len(common) >= 2:
+            k0, k1 = common[-2], common[-1]
+            g = (np_[k1] / np_[k0] - 1) * 100
+            return (f"Overturned if operating profit growth rises to match the {g:.0f}% net-profit growth, or if the disclosed cause of the "
+                    f"{oi[k1]:.0f} other income in {label(k1)} turns out to be recurring (other income staying near {oi[k1] / 4:.0f} a quarter "
+                    f"for the next four quarters with no one-off disclosed).")
+    if cid.startswith("wc_"):
+        m = cid[3:]
+        a = list(annual(panel, m).values())
+        if len(a) >= 3:
+            return (f"Overturned if the move is not a return to normal: {WC.get(m, m)} reverting to its own median of {median(a):.0f} "
+                    f"would remove the finding, as would at least half of the peers showing a similar move.")
+    if cid == "price_vs_volume":
+        return "Overturned if volume growth is positive for two consecutive quarters while price/mix growth falls below volume growth."
+    if cid == "margin_offset":
+        return "Overturned if gross margin recovers to its level a year earlier, or if costs below gross profit rise in line with gross profit."
+    return ""

@@ -103,9 +103,12 @@ def derive(panel: dict) -> dict:
     # Annual working-capital days: year-end balance / full-year flow * 365
     acogs = annual(panel, "cogs")
     arec, ainv, apay = annual(panel, "trade_receivables"), annual(panel, "inventory"), annual(panel, "trade_payables")
-    rd = {k: metrics.receivable_days(arec[k], arev[k], 365) for k in arec if arev.get(k)}
-    idays = {k: metrics.inventory_days(ainv[k], acogs[k], 365) for k in ainv if acogs.get(k)}
-    pdays = {k: metrics.payable_days(apay[k], acogs[k], 365) for k in apay if acogs.get(k)}
+    # If the structured spine already supplies the day ratios, never recompute them from document-extracted levels:
+    # LLM-extracted receivables/COGS gave 112 receivable days against Screener's 19.
+    have = lambda m: len(annual(panel, m)) >= 3
+    rd = {} if have("debtor_days") else {k: metrics.receivable_days(arec[k], arev[k], 365) for k in arec if arev.get(k)}
+    idays = {} if have("inventory_days") else {k: metrics.inventory_days(ainv[k], acogs[k], 365) for k in ainv if acogs.get(k)}
+    pdays = {} if have("payable_days") else {k: metrics.payable_days(apay[k], acogs[k], 365) for k in apay if acogs.get(k)}
     if rd:
         out["receivable_days_annual"] = rd
     if idays:

@@ -30,7 +30,7 @@ SYS_EXTRACT = (
     '{"points":[{"metric":str,"period":str,"value":number,"unit":str,"quote":str}]}. '
     "Use standard metric keys whenever present: revenue, revenue_growth_yoy, volume_growth_yoy, "
     "trade_receivables, inventory, trade_payables, cogs, ebitda_margin, gross_margin, operating_profit, ad_promo_spend, "
-    "channel_mix_pct:<channel> and segment_revenue:<segment> (one metric key PER channel or segment, e.g. segment_revenue:Home Care), "
+    "channel_mix_pct:<channel>, segment_revenue:<segment> (Rs crore only) and segment_growth_yoy:<segment> (percent): one metric key PER channel or segment, and never put a growth rate in a revenue key, "
     "Full-year balance-sheet or P&L figures use period FY24 (no quarter). "
     "Period: for QUARTERS use the period-END month and year exactly as printed in the document header or text (e.g. 'Jun 2025', 'Sep 2025'); do NOT convert to fiscal-year labels and do NOT guess. For FULL YEARS use FY25 (year ended Mar 2025). If the period is not clearly stated, omit the value. "
     "The quote MUST be a short verbatim excerpt (1-2 sentences or table cell) copied from the document containing the number. "
@@ -75,6 +75,9 @@ SYS_JUDGE = (
     "'explains' = the quote identifies the CAUSE or accounting treatment of the gap without changing its size "
     "(e.g. an exceptional gain, a demerger, a restatement); 'contradicts' = the quote reports different numbers or a "
     "relationship that undermines the claim; 'neutral' = other company, other country, other topic, or only loosely related. "
+    "Before choosing 'contradicts', convert units (1 billion = 100 crore; 1 crore = 10 million) and compare GROWTH RATES, "
+    "not levels, because sources define lines differently (EBIT vs EBITDA, consolidated vs standalone). If the growth rates "
+    "and direction agree, the answer is 'supports'. "
     'JSON: {"stance":"supports|explains|contradicts|neutral","summary":str,"quote":str}'
 )
 
@@ -88,6 +91,8 @@ def mentions_company(company: str, text: str) -> bool:
 
 
 def extract_panel(doc_url: str, doc_type: str, title: str, date: str, focus: str = "") -> list[dict]:
+    if "screener.in" in doc_url:        # already loaded as the structured spine; re-extracting it caused one-quarter shifts
+        return []
     text = get_text(doc_url)
     if not text.strip():
         return []
@@ -273,6 +278,22 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
                 print(f"       [eval] skipping evidence doc due to error: {e!r}")
                 continue
 
+    # 5b EXPLAIN: if the gap needs an explanation, search around the quarter where it appeared
+    for q, impl in cand.explanation_queries(company, ranked, selected):
+        print(f"       Explaining: {q[:80]}")
+        for r in search(q, n=3):
+            try:
+                text = get_text(r["url"])[:25_000]
+                if not mentions_company(company, text):
+                    continue
+                ev = llm.complete_json(SYS_JUDGE, f"Company: {company}\nImplication: {impl}\nHypothesis: {hyp['statement']}\nDocument:\n{text}")
+                dt = infer_doc_type(r["url"], r["title"], company)
+                p = verify_passage(Passage(r["url"], dt, r["title"], "", ev.get("quote", "")))
+                if p.verified and ev["stance"] in ("supports", "explains", "contradicts"):
+                    evidence.append(EvidenceItem("h1", ev["stance"], ev["summary"], [p], source_class(dt)))
+            except Exception as e:
+                print(f"       [explain] skipped: {str(e)[:60]}")
+
     # 6 CHALLENGE
     print(f"[6/8] CHALLENGE - adversary trying to disprove ({len(evidence)} evidence items so far)...")
     try:
@@ -321,9 +342,11 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
     alts = adv.get("alternatives", [])
     counter = next((e.summary for e in evidence if e.stance == "contradicts"),
                    alts[0].get("explanation", "None found") if alts else "None found")
-    falsification = adv.get("falsification") or (
-        f"Reconsider if the cited metrics reverse direction for two consecutive quarters, e.g. "
-        f"{implications[0] if implications else 'volume and price/mix converge'}.")
+    det_fals = cand.falsification_for(selected, built["panel"])
+    draft = adv.get("falsification") or ""
+    grounded_base = synthesis.numbers_in(json.dumps(computed, default=str) + " " + (selected["claim"] if selected else ""), include_small_ints=True)
+    falsification = draft if (draft and not synthesis.ungrounded(draft, grounded_base)) else (det_fals or draft or
+        "Reconsider if the cited metrics reverse direction for two consecutive quarters.")
     discovery = hyp.get("statement", "")
     why = (["Hypothesised mechanism (not independently verified): " + hyp.get("mechanism", "")]
            if implications else
@@ -340,7 +363,7 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
             res, syn_notes = synthesis.synthesize(company, selected["claim"] if selected else discovery, key, evidence, alts, falsification)
             discovery = res["discovery"] or discovery
             counter = res["counterargument"] or counter
-            falsification = res["falsification"] or falsification
+            falsification = res["falsification"] or falsification  # drafted above: grounded model text, else deterministic
             if res["why_it_matters"]:
                 why = res["why_it_matters"]
             for n in syn_notes:
