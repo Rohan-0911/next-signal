@@ -179,8 +179,10 @@ def coverage(panel: dict, derived: dict) -> dict:
                                          or len(derived.get("receivable_days", {})) >= 4
                                          or len(annual(panel, "debtor_days")) >= 3)
     cov["margin_quality"] = any(len(quarterly(panel, m)) >= 4 for m in ("ebitda_margin", "gross_margin"))
-    cov["channel_shift"] = len(quarterly(panel, "channel_mix_pct")) >= 3 or len(annual(panel, "channel_mix_pct")) >= 3
-    cov["segment_mix_shift"] = len(annual(panel, "segment_revenue")) >= 3 or len(quarterly(panel, "segment_revenue")) >= 3
+    def series_ok(prefix):
+        return any(m.startswith(prefix) and (len(quarterly(panel, m)) >= 3 or len(annual(panel, m)) >= 3) for m in panel)
+    cov["channel_shift"] = series_ok("channel_mix_pct")
+    cov["segment_mix_shift"] = series_ok("segment_revenue")
     return {t: ("run" if ok else f"skipped: need {TEST_NEEDS[t][0]}") for t, ok in cov.items()}
 
 

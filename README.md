@@ -46,6 +46,8 @@ export GOOGLE_API_KEY="your_api_key_here"
 # Windows (PowerShell):
 $env:GOOGLE_API_KEY="your_api_key_here"
 
+$env:TAVILY_API_KEY="tvly-..."
+
 # Run research agent for any company (writes out/<company>.html)
 python run.py "<company name>"
 

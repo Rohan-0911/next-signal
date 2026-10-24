@@ -1,0 +1,7 @@
+{
+  "_note": "Track-level peer universes (NSE symbols as used by Screener), largest first. Not company-specific tuning: any company in a group is compared with the others. Edit freely; unknown symbols are skipped at runtime.",
+  "staples_foods_hpc": ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "TATACONSUM", "DABUR", "GODREJCP", "MARICO", "COLPAL", "VBL", "PATANJALI", "EMAMILTD", "JYOTHYLAB"],
+  "retail_apparel_lifestyle": ["DMART", "TRENT", "PAGEIND", "ABFRL", "SHOPERSTOP", "VMART"],
+  "jewellery_watches": ["TITAN", "KALYANKJIL", "SENCO"],
+  "paints_decor": ["ASIANPAINT", "BERGEPAINT", "KANSAINER", "INDIGOPNTS", "AKZOINDIA"]
+}

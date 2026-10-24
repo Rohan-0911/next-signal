@@ -1,5 +1,6 @@
 """Triangulation, quote verification and evidence-strength scoring (all deterministic)."""
 from __future__ import annotations
+import re
 from urllib.parse import urlparse
 from ..models import EvidenceItem, Passage
 from ..sources.fetch import get_text, quote_in_document
@@ -33,7 +34,7 @@ def independence(items: list[EvidenceItem]) -> dict:
     """Count independent classes and publishers among SUPPORTING, VERIFIED evidence."""
     classes, domains = set(), set()
     for it in items:
-        if it.stance != "supports":
+        if it.stance not in ("supports", "explains"):   # 'explains' = identifies the cause of the gap, consistent with the finding
             continue
         for p in it.passages:
             if p.verified:
@@ -64,3 +65,24 @@ def grade(items: list[EvidenceItem], peer_story_explains: bool, unresolved_contr
     else:
         level = "Weak"
     return level, "; ".join(reasons)
+
+
+def infer_doc_type(url: str, title: str, company: str) -> str:
+    """Classify a retrieved page so triangulation counts real independence (company site vs media vs exchange)."""
+    u = f"{url} {title}".lower()
+    host = urlparse(url).netloc.lower()
+    words = [w for w in re.split(r"\W+", company.lower()) if w]
+    acr = "".join(w[0] for w in words)
+    # company sites use the initials with L(imited) appended (hul.co.in), the first word, or the joined name
+    names = {words[0] if words else "", acr, acr + "l", "".join(words)}
+    own = any(len(t) >= 3 and t in host for t in names)
+    exch = any(x in host for x in ("bseindia.com", "nseindia.com", "sebi.gov.in"))
+    if "transcript" in u or "earnings call" in u or "earnings-call" in u:
+        return "transcript"
+    if own or exch:
+        if "annual-report" in u or "annual report" in u:
+            return "annual_report"
+        if "presentation" in u:
+            return "presentation"
+        return "results" if own else "filing"
+    return "news"

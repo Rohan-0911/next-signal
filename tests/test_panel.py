@@ -77,3 +77,12 @@ def test_annual_working_capital_days_and_coverage():
     assert P.enough_data(b["panel"], d)[0]
     s = P.summarise(b["panel"], d)
     assert s["receivable_days_annual"]["periods"] == ["FY23", "FY24", "FY25"]
+
+
+def test_segment_and_channel_series_per_name():
+    pts = [pt(f"segment_revenue:{seg}", f"FY{y}", v) for seg, v in (("Home Care", 100), ("Foods", 50)) for y in (24, 25, 26)]
+    pts += [pt("channel_mix_pct:quick_commerce", f"FY{y}", v) for y, v in ((24, 3), (25, 5), (26, 8))]
+    b = P.build_panel(pts)
+    cov = P.coverage(b["panel"], P.derive(b["panel"]))
+    assert cov["segment_mix_shift"] == "run" and cov["channel_shift"] == "run"
+    assert not any("conflict" in n for n in b["notes"])      # different segments no longer collide

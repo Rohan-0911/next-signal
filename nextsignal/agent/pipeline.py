@@ -18,7 +18,8 @@ from ..sources.search import discover_sources, search
 from ..sources.fetch import get_text
 from ..tools import metrics
 from .angles import TRACK_C_TESTS
-from .verify import verify_passage, grade, contradictions, source_class
+from .verify import verify_passage, grade, contradictions, source_class, infer_doc_type
+from . import peers as peermod, synthesis
 from . import panel as panelmod
 from . import candidates as cand
 from ..sources import structured, screener
@@ -29,7 +30,8 @@ SYS_EXTRACT = (
     '{"points":[{"metric":str,"period":str,"value":number,"unit":str,"quote":str}]}. '
     "Use standard metric keys whenever present: revenue, revenue_growth_yoy, volume_growth_yoy, "
     "trade_receivables, inventory, trade_payables, cogs, ebitda_margin, gross_margin, operating_profit, ad_promo_spend, "
-    "channel_mix_pct, segment_revenue. Full-year balance-sheet or P&L figures use period FY24 (no quarter). "
+    "channel_mix_pct:<channel> and segment_revenue:<segment> (one metric key PER channel or segment, e.g. segment_revenue:Home Care), "
+    "Full-year balance-sheet or P&L figures use period FY24 (no quarter). "
     "Period: for QUARTERS use the period-END month and year exactly as printed in the document header or text (e.g. 'Jun 2025', 'Sep 2025'); do NOT convert to fiscal-year labels and do NOT guess. For FULL YEARS use FY25 (year ended Mar 2025). If the period is not clearly stated, omit the value. "
     "The quote MUST be a short verbatim excerpt (1-2 sentences or table cell) copied from the document containing the number. "
     "Rules: the period must be the quarter or year the number REFERS TO (not the report date). Revenue, profit, cogs, receivables, inventory, payables in Rs crore as stated (use the table unit; if the document is in lakh or million, skip it). "
@@ -59,18 +61,21 @@ SYS_ADV = (
     "You are an adversary whose job is to DISPROVE the hypothesis. Given the hypothesis and the evidence so far, "
     "list the strongest alternative explanations and the specific public evidence to search for each. "
     "Each alternative has a category: sector (industry-wide effect), base_effect, accounting, one_off, portfolio, "
-    "management (management's own explanation). Search queries must name the company and India. "
+    "management (management's own explanation) and an `effect`: 'overturn' if it would make the hypothesis wrong, "
+    "'refine' if it would only explain or qualify it (e.g. the cause of a gap the hypothesis already claims). "
+    "Search queries must name the company and India. "
     "Also state a falsification condition: concrete future data (metric, direction, number of quarters) that would "
     "overturn the hypothesis. "
-    'JSON: {"alternatives":[{"category":str,"explanation":str,"search_queries":[str]}],"falsification":str}'
+    'JSON: {"alternatives":[{"category":str,"effect":"overturn|refine","explanation":str,"search_queries":[str]}],"falsification":str}'
 )
 
 SYS_JUDGE = (
     "You judge whether a document tests a specific implication about ONE named company in India. "
-    "Answer 'supports' or 'contradicts' ONLY if the quoted text directly reports data or statements about THAT "
-    "company that bear on the implication. If the document is about another company, another country, a different "
-    "topic, or only loosely related, answer 'neutral'. "
-    'JSON: {"stance":"supports|contradicts|neutral","summary":str,"quote":str}'
+    "Stances: 'supports' = the quote confirms the claimed numbers or relationship for THAT company; "
+    "'explains' = the quote identifies the CAUSE or accounting treatment of the gap without changing its size "
+    "(e.g. an exceptional gain, a demerger, a restatement); 'contradicts' = the quote reports different numbers or a "
+    "relationship that undermines the claim; 'neutral' = other company, other country, other topic, or only loosely related. "
+    'JSON: {"stance":"supports|explains|contradicts|neutral","summary":str,"quote":str}'
 )
 
 
@@ -200,7 +205,10 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
     peer_by_sym = {}
     if scr_html:
         peer_by_sym: dict = {}
-        for sym in screener.peers_for(scr_html, scr_url, limit=5):
+        own_sym = peermod.symbol_from_url(scr_url)
+        picked, rule = peermod.pick_peers(own_sym, screener.peers_for(scr_html, scr_url, limit=8), limit=5)
+        print(f"       Peers ({rule}): {picked}")
+        for sym in picked:
             pp, _, _ = screener.load(sym)
             if pp:
                 peer_by_sym[sym] = panelmod.build_panel(pp)["panel"]
@@ -257,9 +265,10 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
                 ev = llm.complete_json(
                     SYS_JUDGE,
                     f"Company: {company}\nImplication: {impl}\nHypothesis: {hyp['statement']}\nDocument:\n{text}")
-                p = verify_passage(Passage(r["url"], "news", r["title"], "", ev.get("quote", "")))
-                if p.verified and ev["stance"] in ("supports", "contradicts"):
-                    evidence.append(EvidenceItem("h1", ev["stance"], ev["summary"], [p], source_class("news")))
+                dt = infer_doc_type(r["url"], r["title"], company)
+                p = verify_passage(Passage(r["url"], dt, r["title"], "", ev.get("quote", "")))
+                if p.verified and ev["stance"] in ("supports", "explains", "contradicts"):
+                    evidence.append(EvidenceItem("h1", ev["stance"], ev["summary"], [p], source_class(dt)))
             except Exception as e:
                 print(f"       [eval] skipping evidence doc due to error: {e!r}")
                 continue
@@ -288,10 +297,13 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
                         'JSON: {"supports_alternative":bool,"summary":str,"quote":str}',
                         f"Company: {company}\nAlternative: {alt.get('explanation','')}\nDocument:\n{text}")
                     if ev.get("supports_alternative"):
-                        p = verify_passage(Passage(r["url"], "news", r["title"], "", ev.get("quote", "")))
+                        dt = infer_doc_type(r["url"], r["title"], company)
+                        p = verify_passage(Passage(r["url"], dt, r["title"], "", ev.get("quote", "")))
                         if p.verified:
-                            evidence.append(EvidenceItem("h1", "contradicts", f"[{alt.get('category','alt')}] {ev['summary']}", [p], source_class("news")))
-                            if str(alt.get("category", "")).lower() == "sector":
+                            overturns = str(alt.get("effect", "overturn")).lower() != "refine"
+                            evidence.append(EvidenceItem("h1", "contradicts" if overturns else "explains",
+                                                         f"[{alt.get('category','alt')}] {ev['summary']}", [p], source_class(dt)))
+                            if overturns and str(alt.get("category", "")).lower() == "sector":
                                 peer_explains = True
                 except Exception:
                     continue
@@ -312,13 +324,32 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
     falsification = adv.get("falsification") or (
         f"Reconsider if the cited metrics reverse direction for two consecutive quarters, e.g. "
         f"{implications[0] if implications else 'volume and price/mix converge'}.")
+    discovery = hyp.get("statement", "")
+    why = (["Hypothesised mechanism (not independently verified): " + hyp.get("mechanism", "")]
+           if implications else
+           ["No divergence was found in the tests that had enough verified data. Tests that could not run are listed under coverage; "
+            "absence of a finding is not evidence of absence."])
+    syn_notes: list[str] = []
+    if implications and evidence:
+        print("       SYNTHESIS - writing final note from verified evidence, with number check...")
+        try:
+            key = {"selected_candidate": selected, "ranked_candidates": ranked[:3],
+                   "price_vs_volume": computed.get("price_vs_volume_split"),
+                   "annual": {k: v for k, v in computed.items() if k.endswith("_annual") and isinstance(v, dict)},
+                   "quarterly": {k: v for k, v in computed.items() if k in ("revenue", "operating_profit", "net_profit", "other_income", "ebitda_margin") and isinstance(v, dict)}}
+            res, syn_notes = synthesis.synthesize(company, selected["claim"] if selected else discovery, key, evidence, alts, falsification)
+            discovery = res["discovery"] or discovery
+            counter = res["counterargument"] or counter
+            falsification = res["falsification"] or falsification
+            if res["why_it_matters"]:
+                why = res["why_it_matters"]
+            for n in syn_notes:
+                print(f"       synthesis note: {n}")
+        except Exception as e:
+            print(f"       [synthesis] skipped ({str(e)[:80]}); keeping the earlier draft")
     return Finding(
-        company=company, discovery=hyp.get("statement", ""),
-        why_it_matters=(["Hypothesised mechanism (not independently verified): " + hyp.get("mechanism", "")]
-                        if implications else
-                        ["No divergence was found in the tests that had enough verified data. Tests that could not run are listed under coverage; "
-                         "absence of a finding is not evidence of absence."]),
+        company=company, discovery=discovery, why_it_matters=why,
         evidence=evidence, timeline=timeline,
-        numbers={**computed, "data_quality_notes": notes}, counterargument=counter, falsification=falsification,
+        numbers={**computed, "data_quality_notes": notes + syn_notes}, counterargument=counter, falsification=falsification,
         strength=level, strength_reasoning=reasoning,
     )
