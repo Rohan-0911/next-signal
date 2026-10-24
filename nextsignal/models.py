@@ -59,3 +59,15 @@ class Finding:
 
     def to_dict(self):
         return asdict(self)
+
+
+def finding_from_dict(d: dict) -> "Finding":
+    """Rebuild a Finding saved with Finding.to_dict() (used for replay / demo fallback)."""
+    ev = []
+    for e in d.get("evidence", []):
+        ps = [Passage(**p) for p in e.get("passages", [])]
+        ev.append(EvidenceItem(e["hypothesis_id"], e["stance"], e["summary"], ps, e.get("source_class", "")))
+    return Finding(company=d["company"], discovery=d["discovery"], why_it_matters=d["why_it_matters"],
+                   evidence=ev, timeline=[tuple(t) for t in d["timeline"]], numbers=d["numbers"],
+                   counterargument=d["counterargument"], falsification=d["falsification"],
+                   strength=d["strength"], strength_reasoning=d["strength_reasoning"])

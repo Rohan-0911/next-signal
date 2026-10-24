@@ -4,7 +4,7 @@ Given any listed consumer company, the agent investigates public information on 
 **non-obvious, evidence-backed finding** with a source trail, a counterargument and a falsification condition.
 It is not a summariser: it forms a hypothesis, tests it, then tries to break it.
 
-> Status: Round 1 skeleton. Calculation engine and verification logic are unit-tested.
+> Status: pipeline runs end to end with Gemini. Period alignment, data gate and relevance checks are unit-tested offline; live accuracy is still being tuned.
 > The LLM and web stages are implemented but still need live end-to-end testing and tuning on real companies.
 
 ## How it works
@@ -29,6 +29,10 @@ company ─► 1 PROFILE ─► 2 EXTRACT ─► 3 SCAN ─► 4 HYPOTHESISE ─
 * **Self-falsification.** An adversary step lists alternative explanations (sector-wide effect, base effect,
   accounting change, one-off, management explanation), searches for each, and states a falsification condition.
   A sector-wide pattern downgrades the evidence grade.
+
+## Search keys
+Set `GOOGLE_API_KEY` (Gemini) and `TAVILY_API_KEY` (search). PowerShell: `$env:TAVILY_API_KEY="tvly-..."` for this window, or `setx TAVILY_API_KEY "tvly-..."` then open a new terminal.
+Test: `python -c "from nextsignal.sources.search import search; print(search('Hindustan Unilever Q2 FY26 underlying volume growth', 5))"`
 
 ## Run
 

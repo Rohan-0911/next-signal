@@ -26,7 +26,7 @@ def complete(system: str, user: str, max_tokens: int = 4000, model: str | None =
 
     last_err = None
     for target_model in candidates:
-        for attempt in range(2):
+        for attempt in range(4):
             try:
                 response = client.models.generate_content(
                     model=target_model,
@@ -44,10 +44,12 @@ def complete(system: str, user: str, max_tokens: int = 4000, model: str | None =
                 # Quota exhausted: never retry, immediately move to next model
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "Quota" in err_str:
                     break
-                # Transient 503 spike: backoff once
-                if "503" in err_str or "UNAVAILABLE" in err_str:
-                    print(f"[{target_model}] Spiked ({err_str[:40]}...), retrying in 2s...")
-                    time.sleep(2)
+                # Transient: server spike or a flaky connection (DNS, reset, timeout) -> back off and retry
+                if any(x in err_str for x in ("503", "UNAVAILABLE", "getaddrinfo", "ConnectError", "timed out",
+                                              "Timeout", "Connection", "reset", "DNS")):
+                    wait = 2 * (attempt + 1)
+                    print(f"[{target_model}] transient error ({err_str[:50]}...), retry {attempt + 1}/3 in {wait}s")
+                    time.sleep(wait)
                 else:
                     break
 

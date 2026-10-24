@@ -5,3 +5,5 @@ pypdf
 ddgs
 fonttools
 pytest
+yfinance
+pandas
