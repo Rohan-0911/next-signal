@@ -30,16 +30,26 @@ def verify_passage(p: Passage) -> Passage:
     return p
 
 
+SOCIAL = ("youtube.com", "youtu.be", "instagram.com", "linkedin.com", "facebook.com", "x.com", "twitter.com", "reddit.com")
+STRUCTURED = ("screener.in", "finance.yahoo.com/quote", "stockanalysis.com")
+
+
 def independence(items: list[EvidenceItem]) -> dict:
-    """Count independent classes and publishers among SUPPORTING, VERIFIED evidence."""
+    """Count independent classes among SUPPORTING, VERIFIED evidence.
+    Aggregator numbers (Screener etc.) are ONE class however many ways they are sliced;
+    social-media posts never count as independent evidence."""
     classes, domains = set(), set()
     for it in items:
-        if it.stance not in ("supports", "explains"):   # 'explains' = identifies the cause of the gap, consistent with the finding
+        if it.stance not in ("supports", "explains"):
             continue
         for p in it.passages:
-            if p.verified:
-                classes.add(source_class(p.doc_type))
-                domains.add(urlparse(p.url).netloc)
+            if not p.verified:
+                continue
+            u = p.url.lower()
+            if any(s in u for s in SOCIAL):
+                continue
+            classes.add("structured_data" if any(s in u for s in STRUCTURED) else source_class(p.doc_type))
+            domains.add(urlparse(p.url).netloc)
     return {"classes": sorted(classes), "domains": sorted(domains)}
 
 
