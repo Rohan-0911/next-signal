@@ -13,6 +13,7 @@ Stages (see README for the diagram):
 from __future__ import annotations
 import json
 import re
+import unicodedata
 from .. import llm
 from ..models import Passage, EvidenceItem, Finding
 from ..sources.search import discover_sources, search
@@ -84,15 +85,24 @@ SYS_JUDGE = (
 _FIN_CTX = ("crore", "revenue", "net profit", "quarter", "fmcg", "nse", "bse", "results", "ebitda", "shares", "dividend")
 
 
+def _fold(text: str) -> str:
+    """Lower-case, strip accents (Nestlé -> nestle) and punctuation so names compare reliably."""
+    t = unicodedata.normalize("NFKD", text)
+    t = "".join(c for c in t if not unicodedata.combining(c)).lower()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9& ]+", " ", t)).strip()
+
+
 def mentions_company(company: str, text: str) -> bool:
-    """Relevance guard. Short names (ITC, HUL) collide with other firms, so they need either a legal
-    suffix / exchange tag, or repeated whole-word use in financial context that is not mostly a
-    different entity ('ITC Hotels', 'ITC Infotech')."""
-    t = text.lower()
-    name = re.sub(r"\s+", " ", company.lower()).strip()
-    if len(name) <= 5 and " " not in name:
+    """Relevance guard.
+    * 1-4 letter names (ITC, HUL) collide with other firms: need a legal suffix / exchange tag, or repeated
+      whole-word use in financial context that is not mostly a different entity ('ITC Hotels').
+    * Single longer words (Dabur, Titan): whole word match.
+    * Multi-word names (Nestle India): the FULL name must appear, so the Swiss parent's pages do not pass."""
+    name = _fold(company)
+    t = _fold(text)
+    if len(name) <= 4 and " " not in name:
         n = re.escape(name)
-        if re.search(rf"\b{n}\s+(limited|ltd)\b|\b(nse|bse)\s*[:\-]\s*{n}\b", t):
+        if re.search(rf"\b{n}\s+(limited|ltd)\b|\b(nse|bse)\s+{n}\b", t):
             return True
         word = re.compile(rf"\b{re.escape(company.strip())}\b")          # original case: acronyms are upper-case
         hits = word.findall(text)
@@ -100,9 +110,10 @@ def mentions_company(company: str, text: str) -> bool:
             return False
         other = len(re.findall(rf"\b{re.escape(company.strip())}\s+(?!Limited\b|Ltd\b)[A-Z][a-z]+", text))
         return other * 2 < len(hits)
-    first = name.split()[0]
-    return name in t or (len(first) >= 5 and re.search(rf"\b{re.escape(first)}\b", t) is not None)
-
+    hits = len(re.findall(rf"\b{re.escape(name)}\b", t))
+    if " " in name and len(t) >= 15000:
+        return hits >= 3        # long documents (annual reports, PDFs): a passing mention in a subsidiary list is not enough
+    return hits >= 1
 
 def extract_panel(doc_url: str, doc_type: str, title: str, date: str, focus: str = "", company: str = "") -> list[dict]:
     if "screener.in" in doc_url:        # already loaded as the structured spine; re-extracting it caused one-quarter shifts

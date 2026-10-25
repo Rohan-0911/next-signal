@@ -49,6 +49,9 @@ def _clean_segments(points: list[dict], notes: list[str]) -> list[dict]:
     out = []
     for p in points:
         m = str(p.get("metric", ""))
+        if "<" in m or ">" in m:                      # template placeholder echoed by the model
+            notes.append(f"dropped placeholder metric {m!r}")
+            continue
         if ":" in m:
             head, tail = m.split(":", 1)
             m = head + ":" + " ".join(tail.replace("_", " ").lower().split())
