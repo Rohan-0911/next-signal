@@ -34,7 +34,7 @@ def test_explains_counts_as_independent_support_but_not_as_contradiction():
              ev("explains", "annual_report", "https://www.hul.co.in/ar.pdf"),
              ev("explains", "news", "https://etretail.com/a"),
              ev("contradicts", "news", "https://other.com/b")]
-    assert set(V.independence(items)["classes"]) == {"company_primary", "media"}
+    assert set(V.independence(items)["classes"]) == {"company_primary", "media", "structured_data"}
     level, why = V.grade(items, False, len(V.contradictions(items)))
     assert level == "Moderate"          # was Weak when explanations were mislabelled as contradictions
 
@@ -55,3 +55,10 @@ def test_peer_selection_uses_track_universe_not_industry_tags():
     assert peers == ["ITC"] and "restricted" in rule
     assert PE.pick_peers("UNKNOWNCO", ["HNDFDS"], 5)[0] == []
     assert PE.symbol_from_url("https://www.screener.in/company/HINDUNILVR/consolidated/") == "HINDUNILVR"
+
+def test_screener_is_one_class_and_social_is_ignored():
+    items = [ev("supports", "results", "https://www.screener.in/company/ITC/consolidated/"),
+             ev("supports", "peer", "https://www.screener.in/company/NESTLEIND/consolidated/"),
+             ev("explains", "news", "https://www.linkedin.com/company/itc")]
+    assert V.independence(items)["classes"] == ["structured_data"]
+    assert V.grade(items, False, 0)[0] == "Weak"

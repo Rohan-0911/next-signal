@@ -17,7 +17,6 @@ from .. import llm
 from ..models import Passage, EvidenceItem, Finding
 from ..sources.search import discover_sources, search
 from ..sources.fetch import get_text
-from ..tools import metrics
 from .angles import TRACK_C_TESTS
 from .verify import verify_passage, grade, contradictions, source_class, infer_doc_type
 from . import peers as peermod, synthesis
@@ -82,23 +81,37 @@ SYS_JUDGE = (
     'JSON: {"stance":"supports|explains|contradicts|neutral","summary":str,"quote":str}'
 )
 
+_FIN_CTX = ("crore", "revenue", "net profit", "quarter", "fmcg", "nse", "bse", "results", "ebitda", "shares", "dividend")
+
+
 def mentions_company(company: str, text: str) -> bool:
-    """Relevance guard. Short names (ITC, HUL) collide with unrelated firms, so they must appear
-    as a whole word followed by a legal suffix (Limited/Ltd) or an exchange tag."""
+    """Relevance guard. Short names (ITC, HUL) collide with other firms, so they need either a legal
+    suffix / exchange tag, or repeated whole-word use in financial context that is not mostly a
+    different entity ('ITC Hotels', 'ITC Infotech')."""
     t = text.lower()
     name = re.sub(r"\s+", " ", company.lower()).strip()
     if len(name) <= 5 and " " not in name:
         n = re.escape(name)
-        return bool(re.search(rf"\b{n}\s+(limited|ltd)\b|\b(nse|bse)\s*[:\-]\s*{n}\b", t))
+        if re.search(rf"\b{n}\s+(limited|ltd)\b|\b(nse|bse)\s*[:\-]\s*{n}\b", t):
+            return True
+        word = re.compile(rf"\b{re.escape(company.strip())}\b")          # original case: acronyms are upper-case
+        hits = word.findall(text)
+        if len(hits) < 3 or sum(1 for c in _FIN_CTX if c in t) < 2:
+            return False
+        other = len(re.findall(rf"\b{re.escape(company.strip())}\s+(?!Limited\b|Ltd\b)[A-Z][a-z]+", text))
+        return other * 2 < len(hits)
     first = name.split()[0]
     return name in t or (len(first) >= 5 and re.search(rf"\b{re.escape(first)}\b", t) is not None)
 
 
-def extract_panel(doc_url: str, doc_type: str, title: str, date: str, focus: str = "") -> list[dict]:
+def extract_panel(doc_url: str, doc_type: str, title: str, date: str, focus: str = "", company: str = "") -> list[dict]:
     if "screener.in" in doc_url:        # already loaded as the structured spine; re-extracting it caused one-quarter shifts
         return []
     text = get_text(doc_url)
     if not text.strip():
+        return []
+    if company and not mentions_company(company, text):
+        print(f"       [extract] skipped: page does not appear to be about {company}")
         return []
     focus_hint = (f"FOCUS: extract these if present: {focus}\n\n" if focus else "")
     out = llm.complete_json(SYS_EXTRACT, f"Document ({doc_type}, {title}):\n{focus_hint}{text[:45000]}")
@@ -153,7 +166,7 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
         for s in sources.get(doc_type, [])[:max_docs_per_type]:
             try:
                 print(f"       [{doc_type}] {s['url'][:80]}")
-                extracted = extract_panel(s["url"], doc_type, s["title"], date="")
+                extracted = extract_panel(s["url"], doc_type, s["title"], date="", company=company)
                 print(f"       [{doc_type}] -> {len(extracted)} verified data points")
                 points += extracted
             except Exception as e:
@@ -172,7 +185,7 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
         print(f"       [targeted] {test}: need {need}")
         for r in search(f"{company} {hint}", n=3)[:2]:
             try:
-                ex = extract_panel(r["url"], "annual_report" if "annual" in hint else "presentation", r["title"], "", focus=hint)
+                ex = extract_panel(r["url"], "annual_report" if "annual" in hint else "presentation", r["title"], "", focus=hint, company=company)
                 print(f"       [targeted] {r['url'][:70]} -> {len(ex)} verified data points")
                 points += ex
             except Exception as e:
@@ -190,7 +203,7 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
             print(f"       [volume] Q{q} FY{fy % 100:02d}")
             for r in search(f"{company} Q{q} FY{fy % 100:02d} results underlying volume growth press release", n=3)[:2]:
                 try:
-                    ex = [x for x in extract_panel(r["url"], "presentation", r["title"], "", focus=focus)
+                    ex = [x for x in extract_panel(r["url"], "presentation", r["title"], "", focus=focus, company=company)
                           if x["metric"] in ("volume_growth_yoy", "revenue_growth_yoy")]
                     print(f"       [volume] {r['url'][:70]} -> {len(ex)} points")
                     points += ex
@@ -332,6 +345,19 @@ def run(company: str, max_docs_per_type: int = 4) -> Finding:
                                 peer_explains = True
                 except Exception:
                     continue
+
+    # De-duplicate: the same page/quote must not appear (or count) more than once
+    seen_ev: set = set()
+    unique: list[EvidenceItem] = []
+    for e in evidence:
+        sig = tuple(sorted((p.url, " ".join(p.quote.lower().split())[:120]) for p in e.passages))
+        if sig in seen_ev:
+            continue
+        seen_ev.add(sig)
+        unique.append(e)
+    if len(unique) < len(evidence):
+        print(f"       De-duplicated evidence: {len(evidence)} -> {len(unique)}")
+    evidence = unique
 
     # 7 VERIFY + grade
     print("[7/8] VERIFY - grading evidence strength...")

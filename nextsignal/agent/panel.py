@@ -43,11 +43,44 @@ def _drop_scale_errors(points: list[dict], notes: list[str]) -> list[dict]:
         kept.append(p)
     return kept
 
+def _clean_segments(points: list[dict], notes: list[str]) -> list[dict]:
+    """Normalise segment names ('Home Care' / 'Home care' / 'home_care' are one segment) and drop a
+    segment_revenue value that is really the growth rate (same value as segment_growth_yoy)."""
+    out = []
+    for p in points:
+        m = str(p.get("metric", ""))
+        if ":" in m:
+            head, tail = m.split(":", 1)
+            m = head + ":" + " ".join(tail.replace("_", " ").lower().split())
+            p = {**p, "metric": m}
+        out.append(p)
+    growth = {}
+    for p in out:
+        if p["metric"].startswith("segment_growth_yoy:"):
+            try:
+                growth.setdefault((p["metric"].split(":", 1)[1], p.get("period")), []).append(float(p["value"]))
+            except (TypeError, ValueError):
+                pass
+    kept = []
+    for p in out:
+        if p["metric"].startswith("segment_revenue:"):
+            try:
+                v = float(p["value"])
+            except (TypeError, ValueError):
+                kept.append(p)
+                continue
+            gs = growth.get((p["metric"].split(":", 1)[1], p.get("period")), [])
+            if any(abs(v - g) < 0.51 for g in gs):
+                notes.append(f"dropped {p['metric']} {p.get('period')}={v:g}: same as the growth rate, not a revenue level")
+                continue
+        kept.append(p)
+    return kept
+
 def build_panel(points: list[dict]) -> dict:
     """points: [{metric, period, value, passage(with doc_type)}] -> {metric: {key: value}} + notes."""
     notes: list[str] = []
     best: dict[str, dict[tuple, tuple[int, float]]] = {}
-    points = _drop_scale_errors(points, notes)
+    points = _clean_segments(points, notes)
     for p in points:
         key = parse_period(p.get("period", ""))
         if key is None:
