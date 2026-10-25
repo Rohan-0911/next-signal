@@ -52,7 +52,9 @@ def ungrounded(text: str, grounded: list[float]) -> list[float]:
 def grounded_numbers(key_numbers: dict, evidence) -> list[float]:
     blob = json.dumps(key_numbers, default=str)
     quotes = " ".join(p.quote for e in evidence for p in e.passages if p.verified)
-    return numbers_in(blob + " " + quotes, include_small_ints=True)
+    nums = numbers_in(blob + " " + quotes, include_small_ints=True)
+    # Fractions in the computed data (0.75 percentile, 0.515 price share) are written as percentages in prose.
+    return nums + [round(n * 100, 1) for n in nums if 0 < n <= 1.5]
 
 
 def synthesize(company: str, claim: str, key_numbers: dict, evidence, alternatives: list, falsification_draft: str):
